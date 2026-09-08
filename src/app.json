@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "SocialSim",
+    "slug": "socialsim",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "socialsim",
+    "web": {
+      "bundler": "metro",
+      "output": "server"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}
