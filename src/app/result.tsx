@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -10,42 +10,27 @@ import {
   View,
 } from 'react-native';
 
+import { SERVER_URL } from '../config';
+
 type Analysis = {
   overallScore: number;
   toneScore: number;
   naturalScore: number;
   respectScore: number;
+  continuationScore?: number;
+  responseScore?: number;
+  questioningScore?: number;
   goodPoints: string[];
   problems: string[];
   advice: string[];
   example: string;
 };
 
-const SERVER_URL = 'http://10.243.27.137:3000';
-
-const HISTORY_KEY =
-  'tongue_brake_history';
-
-const OLD_HISTORY_KEY =
-  'socialsim_history';
-
 export default function ResultScreen() {
-  const params =
-    useLocalSearchParams();
-
-  const messages = String(
-    params.messages || ''
-  );
-
-  const situation = String(
-    params.situation ||
-      '일상적인 대화'
-  );
-
-  const personality = String(
-    params.personality ||
-      '일반 대화'
-  );
+  const [messages, setMessages] = useState('');
+  const [situation, setSituation] = useState('대화');
+  const [personality, setPersonality] =
+    useState('일반 대화');
 
   const [analysis, setAnalysis] =
     useState<Analysis | null>(null);
@@ -53,39 +38,117 @@ export default function ResultScreen() {
   const [loading, setLoading] =
     useState(true);
 
-  const [error, setError] =
+  const [errorMessage, setErrorMessage] =
     useState('');
 
-  const analyze = async () => {
-    setLoading(true);
-    setError('');
-
+  const analyzeConversation = async () => {
     try {
-      if (!messages.trim()) {
+      console.log('🔎 분석 시작');
+
+      const saved =
+        await AsyncStorage.getItem(
+          'tongue_brake_current_conversation'
+        );
+
+      console.log(
+        '📦 저장된 대화:',
+        saved
+      );
+
+      if (!saved) {
         throw new Error(
-          '분석할 대화 내용이 없습니다.'
+          '분석할 대화가 없습니다.'
         );
       }
 
-      const response =
-        await fetch(
-          `${SERVER_URL}/analyze`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type':
-                'application/json',
-            },
-            body: JSON.stringify({
-              messages,
-              situation,
-              personality,
-            }),
-          }
+      const conversation =
+        JSON.parse(saved);
+
+      const conversationText =
+        String(
+          conversation.messages || ''
         );
+
+      const currentSituation =
+        String(
+          conversation.situation || '대화'
+        );
+
+      const currentPersonality =
+        String(
+          conversation.personality ||
+            '일반 대화'
+        );
+
+      if (!conversationText.trim()) {
+        throw new Error(
+          '저장된 대화 내용이 비어 있습니다.'
+        );
+      }
+
+      setMessages(
+        conversationText
+      );
+
+      setSituation(
+        currentSituation
+      );
+
+      setPersonality(
+        currentPersonality
+      );
+
+      console.log(
+        '📤 서버로 분석 요청:',
+        {
+          messages:
+            conversationText,
+          situation:
+            currentSituation,
+          personality:
+            currentPersonality,
+        }
+      );
+
+      /*
+       * 중요:
+       * server.js의 /analyze는
+       * "messages"라는 이름을 사용한다.
+       *
+       * 따라서 conversation이 아니라
+       * messages로 보내야 한다.
+       */
+
+      const response = await fetch(
+        `${SERVER_URL}/analyze`,
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+
+          body: JSON.stringify({
+            messages:
+              conversationText,
+
+            situation:
+              currentSituation,
+
+            personality:
+              currentPersonality,
+          }),
+        }
+      );
 
       const data =
         await response.json();
+
+      console.log(
+        '📥 분석 서버 응답:',
+        data
+      );
 
       if (!response.ok) {
         throw new Error(
@@ -94,28 +157,31 @@ export default function ResultScreen() {
         );
       }
 
-      if (!data?.analysis) {
-        throw new Error(
-          '분석 결과를 받지 못했습니다.'
-        );
-      }
-
-      const result: Analysis =
-        data.analysis;
+      const result =
+        data.analysis ?? data;
 
       setAnalysis(result);
 
-      await saveHistory(result);
+      await saveHistory(
+        result,
+        conversationText,
+        currentSituation,
+        currentPersonality
+      );
+
+      console.log(
+        '✅ 분석 완료'
+      );
     } catch (error) {
       console.error(
         '분석 오류:',
         error
       );
 
-      setError(
+      setErrorMessage(
         error instanceof Error
           ? error.message
-          : '분석에 실패했습니다.'
+          : '분석 중 오류가 발생했습니다.'
       );
     } finally {
       setLoading(false);
@@ -123,49 +189,52 @@ export default function ResultScreen() {
   };
 
   const saveHistory = async (
-    result: Analysis
+    result: Analysis,
+    conversationText: string,
+    currentSituation: string,
+    currentPersonality: string
   ) => {
     try {
-      const newItem = {
+      const saved =
+        await AsyncStorage.getItem(
+          'tongue_brake_history'
+        );
+
+      const history =
+        saved
+          ? JSON.parse(saved)
+          : [];
+
+      const item = {
         id:
-          `${Date.now()}-${Math.random()
-            .toString(36)
-            .slice(2, 8)}`,
+          Date.now().toString(),
 
         date:
           new Date().toISOString(),
 
-        situation,
+        situation:
+          currentSituation,
 
-        personality,
+        personality:
+          currentPersonality,
 
-        messages,
+        messages:
+          conversationText,
 
-        analysis: result,
+        analysis:
+          result,
       };
 
-      const current =
-        await AsyncStorage.getItem(
-          HISTORY_KEY
-        );
-
-      let history =
-        current
-          ? JSON.parse(current)
-          : [];
-
-      if (!Array.isArray(history)) {
-        history = [];
-      }
-
-      history = [
-        newItem,
-        ...history,
-      ];
-
       await AsyncStorage.setItem(
-        HISTORY_KEY,
-        JSON.stringify(history)
+        'tongue_brake_history',
+        JSON.stringify([
+          item,
+          ...history,
+        ])
+      );
+
+      console.log(
+        '✅ 기록 저장 완료'
       );
     } catch (error) {
       console.error(
@@ -176,59 +245,60 @@ export default function ResultScreen() {
   };
 
   useEffect(() => {
-    analyze();
+    analyzeConversation();
   }, []);
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" />
+      <View
+        style={styles.loadingScreen}
+      >
+        <ActivityIndicator
+          size="large"
+        />
 
-        <Text style={styles.loadingTitle}>
+        <Text
+          style={styles.loadingTitle}
+        >
           대화를 분석하는 중...
         </Text>
 
-        <Text style={styles.loadingText}>
-          실제 대화 흐름을 확인하고 있어요.
+        <Text
+          style={styles.loadingText}
+        >
+          잠시만 기다려주세요.
         </Text>
       </View>
     );
   }
 
-  if (
-    error ||
-    !analysis
-  ) {
+  if (!analysis) {
     return (
-      <View style={styles.center}>
-        <Text style={styles.errorEmoji}>
-          ⚠️
+      <View
+        style={styles.loadingScreen}
+      >
+        <Text
+          style={styles.errorTitle}
+        >
+          분석 결과를 불러오지 못했습니다.
         </Text>
 
-        <Text style={styles.errorTitle}>
-          분석에 실패했습니다.
-        </Text>
-
-        <Text style={styles.errorText}>
-          {error}
+        <Text
+          style={styles.errorMessage}
+        >
+          {errorMessage ||
+            '알 수 없는 오류가 발생했습니다.'}
         </Text>
 
         <Pressable
-          style={styles.retryButton}
-          onPress={analyze}
+          style={styles.homeButton}
+          onPress={() => {
+            router.replace('/');
+          }}
         >
-          <Text style={styles.retryText}>
-            다시 분석하기
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.backButton}
-          onPress={() =>
-            router.replace('/')
-          }
-        >
-          <Text style={styles.backText}>
+          <Text
+            style={styles.homeButtonText}
+          >
             홈으로
           </Text>
         </Pressable>
@@ -236,17 +306,18 @@ export default function ResultScreen() {
     );
   }
 
-  const mainProblem =
-    analysis.problems?.[0] ||
-    '특별히 크게 어색한 부분은 없었어요.';
-
-  const mainAdvice =
-    analysis.advice?.[0] ||
-    '지금처럼 상대의 말에 반응하면서 대화를 이어가 보세요.';
-
-  const example =
-    analysis.example ||
-    '상대방이 한 말에서 한 가지를 골라 자연스럽게 이어가 보세요.';
+  const overall =
+    Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          Number(
+            analysis.overallScore || 0
+          )
+        )
+      )
+    );
 
   return (
     <ScrollView
@@ -256,34 +327,22 @@ export default function ResultScreen() {
       }
     >
       <View style={styles.header}>
-        <Pressable
-          onPress={() =>
-            router.replace('/')
-          }
-        >
-          <Text style={styles.back}>
-            ←
-          </Text>
-        </Pressable>
-
         <Text style={styles.title}>
-          대화 분석
+          대화 분석 결과
         </Text>
 
-        <View style={{ width: 28 }} />
+        <Text style={styles.subtitle}>
+          {situation}
+        </Text>
       </View>
-
-      <Text style={styles.situation}>
-        {situation}
-      </Text>
 
       <View style={styles.scoreCard}>
         <Text style={styles.scoreLabel}>
-          이번 대화
+          종합 점수
         </Text>
 
         <Text style={styles.score}>
-          {analysis.overallScore}
+          {overall}
         </Text>
 
         <Text style={styles.scoreUnit}>
@@ -291,102 +350,210 @@ export default function ResultScreen() {
         </Text>
       </View>
 
-      <View style={styles.feedbackCard}>
+      <View style={styles.card}>
         <Text style={styles.cardTitle}>
-          🎯 핵심 피드백
-        </Text>
-
-        <Text style={styles.feedbackLabel}>
           잘한 점
         </Text>
 
-        <Text style={styles.feedbackText}>
-          {analysis.goodPoints?.[0] ||
-            '상대와 대화를 이어가려는 시도가 있었어요.'}
-        </Text>
+        {analysis.goodPoints &&
+        analysis.goodPoints.length >
+          0 ? (
+          analysis.goodPoints.map(
+            (item, index) => (
+              <View
+                key={`good-${index}`}
+                style={styles.listRow}
+              >
+                <Text
+                  style={styles.bullet}
+                >
+                  •
+                </Text>
 
-        <View style={styles.divider} />
-
-        <Text style={styles.feedbackLabel}>
-          다음엔 이것만
-        </Text>
-
-        <Text style={styles.feedbackText}>
-          {mainProblem}
-        </Text>
-
-        <View style={styles.divider} />
-
-        <Text style={styles.feedbackLabel}>
-          연습 방법
-        </Text>
-
-        <Text style={styles.feedbackText}>
-          {mainAdvice}
-        </Text>
+                <Text
+                  style={styles.listText}
+                >
+                  {item}
+                </Text>
+              </View>
+            )
+          )
+        ) : (
+          <Text
+            style={styles.emptyText}
+          >
+            분석된 내용이 없습니다.
+          </Text>
+        )}
       </View>
 
-      <View style={styles.exampleCard}>
+      <View style={styles.card}>
         <Text style={styles.cardTitle}>
-          💬 이렇게 말해볼 수도 있어요
+          아쉬운 점
         </Text>
 
-        <Text style={styles.example}>
-          {example}
-        </Text>
+        {analysis.problems &&
+        analysis.problems.length >
+          0 ? (
+          analysis.problems.map(
+            (item, index) => (
+              <View
+                key={`problem-${index}`}
+                style={styles.listRow}
+              >
+                <Text
+                  style={styles.bullet}
+                >
+                  •
+                </Text>
+
+                <Text
+                  style={styles.listText}
+                >
+                  {item}
+                </Text>
+              </View>
+            )
+          )
+        ) : (
+          <Text
+            style={styles.emptyText}
+          >
+            특별한 문제점이 발견되지 않았습니다.
+          </Text>
+        )}
       </View>
 
-      <Text style={styles.detailTitle}>
-        세부 점수
-      </Text>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>
+          다음에는 이렇게
+        </Text>
 
-      <View style={styles.detailCard}>
+        {analysis.advice &&
+        analysis.advice.length > 0 ? (
+          analysis.advice.map(
+            (item, index) => (
+              <View
+                key={`advice-${index}`}
+                style={styles.listRow}
+              >
+                <Text
+                  style={styles.bullet}
+                >
+                  •
+                </Text>
+
+                <Text
+                  style={styles.listText}
+                >
+                  {item}
+                </Text>
+              </View>
+            )
+          )
+        ) : (
+          <Text
+            style={styles.emptyText}
+          >
+            특별한 조언이 없습니다.
+          </Text>
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>
+          추천 답변
+        </Text>
+
+        <View
+          style={styles.exampleBox}
+        >
+          <Text
+            style={styles.exampleText}
+          >
+            {analysis.example ||
+              '추천 답변이 없습니다.'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>
+          세부 점수
+        </Text>
+
         <ScoreRow
           title="말투"
-          score={analysis.toneScore}
+          value={analysis.toneScore}
         />
 
         <ScoreRow
           title="자연스러움"
-          score={analysis.naturalScore}
+          value={
+            analysis.naturalScore
+          }
         />
 
         <ScoreRow
-          title="배려"
-          score={analysis.respectScore}
+          title="존중"
+          value={
+            analysis.respectScore
+          }
+        />
+
+        <ScoreRow
+          title="대화 이어가기"
+          value={
+            analysis.continuationScore
+          }
+        />
+
+        <ScoreRow
+          title="응답"
+          value={
+            analysis.responseScore
+          }
+        />
+
+        <ScoreRow
+          title="질문"
+          value={
+            analysis.questioningScore
+          }
         />
       </View>
 
       <Pressable
-        style={styles.primaryButton}
-        onPress={() =>
-          router.push('/setup')
+        style={
+          styles.primaryButton
         }
+        onPress={() => {
+          router.replace('/');
+        }}
       >
-        <Text style={styles.primaryText}>
+        <Text
+          style={
+            styles.primaryButtonText
+          }
+        >
           다시 연습하기
         </Text>
       </Pressable>
 
       <Pressable
-        style={styles.secondaryButton}
-        onPress={() =>
-          router.push('/history')
+        style={
+          styles.secondaryButton
         }
+        onPress={() => {
+          router.push('/history');
+        }}
       >
-        <Text style={styles.secondaryText}>
-          기록 보기
-        </Text>
-      </Pressable>
-
-      <Pressable
-        style={styles.homeButton}
-        onPress={() =>
-          router.replace('/')
-        }
-      >
-        <Text style={styles.homeText}>
-          홈으로
+        <Text
+          style={
+            styles.secondaryButtonText
+          }
+        >
+          지난 기록 보기
         </Text>
       </Pressable>
     </ScrollView>
@@ -395,37 +562,52 @@ export default function ResultScreen() {
 
 function ScoreRow({
   title,
-  score,
+  value,
 }: {
   title: string;
-  score: number;
+  value?: number;
 }) {
+  const safeScore =
+    Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          Number(value || 0)
+        )
+      )
+    );
+
   return (
     <View style={styles.scoreRow}>
-      <Text style={styles.scoreRowTitle}>
-        {title}
-      </Text>
+      <View
+        style={styles.scoreRowTop}
+      >
+        <Text
+          style={styles.scoreRowTitle}
+        >
+          {title}
+        </Text>
 
-      <View style={styles.barBackground}>
+        <Text
+          style={styles.scoreRowValue}
+        >
+          {safeScore}
+        </Text>
+      </View>
+
+      <View
+        style={styles.barBackground}
+      >
         <View
           style={[
             styles.bar,
             {
-              width: `${Math.max(
-                0,
-                Math.min(
-                  100,
-                  score || 0
-                )
-              )}%`,
+              width: `${safeScore}%`,
             },
           ]}
         />
       </View>
-
-      <Text style={styles.scoreRowNumber}>
-        {score}
-      </Text>
     </View>
   );
 }
@@ -437,14 +619,11 @@ const styles = StyleSheet.create({
   },
 
   content: {
-    width: '100%',
-    maxWidth: 700,
-    alignSelf: 'center',
-    padding: 24,
-    paddingBottom: 60,
+    padding: 18,
+    paddingBottom: 40,
   },
 
-  center: {
+  loadingScreen: {
     flex: 1,
     backgroundColor: '#F7F7F8',
     alignItems: 'center',
@@ -459,225 +638,192 @@ const styles = StyleSheet.create({
   },
 
   loadingText: {
-    marginTop: 7,
+    marginTop: 8,
+    fontSize: 13,
     color: '#888888',
-    fontSize: 12,
-  },
-
-  errorEmoji: {
-    fontSize: 42,
   },
 
   errorTitle: {
-    marginTop: 15,
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '800',
+    textAlign: 'center',
   },
 
-  errorText: {
+  errorMessage: {
     marginTop: 12,
+    fontSize: 13,
     color: '#777777',
     textAlign: 'center',
     lineHeight: 20,
   },
 
-  retryButton: {
-    marginTop: 25,
-    backgroundColor: '#111111',
-    paddingHorizontal: 22,
-    paddingVertical: 13,
-    borderRadius: 12,
-  },
-
-  retryText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-
-  backButton: {
-    padding: 15,
-  },
-
-  backText: {
-    color: '#777777',
-  },
-
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
-  back: {
-    fontSize: 27,
+    marginBottom: 18,
   },
 
   title: {
-    fontSize: 22,
+    fontSize: 25,
     fontWeight: '900',
+    color: '#111111',
   },
 
-  situation: {
-    marginTop: 25,
-    textAlign: 'center',
+  subtitle: {
+    marginTop: 5,
+    fontSize: 13,
     color: '#888888',
-    fontSize: 12,
   },
 
   scoreCard: {
-    marginTop: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 27,
+    backgroundColor: '#111111',
+    borderRadius: 22,
+    padding: 25,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#EEEEEE',
+    marginBottom: 15,
   },
 
   scoreLabel: {
-    color: '#999999',
+    color: '#BBBBBB',
     fontSize: 12,
     fontWeight: '700',
   },
 
   score: {
     marginTop: 4,
-    fontSize: 57,
+    color: '#FFFFFF',
+    fontSize: 58,
     fontWeight: '900',
   },
 
   scoreUnit: {
+    marginTop: -5,
     color: '#AAAAAA',
     fontSize: 12,
   },
 
-  feedbackCard: {
-    marginTop: 12,
+  card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 17,
+    borderRadius: 18,
     padding: 18,
+    marginBottom: 13,
     borderWidth: 1,
-    borderColor: '#EEEEEE',
+    borderColor: '#EAEAEA',
   },
 
   cardTitle: {
     fontSize: 16,
     fontWeight: '800',
-    marginBottom: 15,
+    marginBottom: 13,
   },
 
-  feedbackLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#999999',
-    marginBottom: 5,
+  listRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 9,
   },
 
-  feedbackText: {
+  bullet: {
+    width: 18,
+    fontSize: 15,
+    color: '#555555',
+  },
+
+  listText: {
+    flex: 1,
     fontSize: 13,
-    color: '#444444',
+    color: '#333333',
     lineHeight: 20,
   },
 
-  divider: {
-    height: 1,
-    backgroundColor: '#EEEEEE',
-    marginVertical: 14,
+  emptyText: {
+    fontSize: 13,
+    color: '#999999',
   },
 
-  exampleCard: {
-    marginTop: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 17,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#EEEEEE',
+  exampleBox: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 14,
   },
 
-  example: {
-    color: '#555555',
-    fontSize: 14,
+  exampleText: {
+    fontSize: 13,
+    color: '#333333',
     lineHeight: 21,
   },
 
-  detailTitle: {
-    marginTop: 25,
-    marginBottom: 10,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  detailCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 17,
-    padding: 17,
-    borderWidth: 1,
-    borderColor: '#EEEEEE',
-  },
-
   scoreRow: {
+    marginBottom: 15,
+  },
+
+  scoreRowTop: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 7,
+    justifyContent: 'space-between',
+    marginBottom: 7,
   },
 
   scoreRowTitle: {
-    width: 65,
     fontSize: 12,
-    color: '#666666',
+    color: '#555555',
+  },
+
+  scoreRowValue: {
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   barBackground: {
-    flex: 1,
     height: 7,
-    borderRadius: 4,
+    borderRadius: 5,
     backgroundColor: '#EEEEEE',
     overflow: 'hidden',
   },
 
   bar: {
     height: 7,
-    borderRadius: 4,
-    backgroundColor: '#222222',
-  },
-
-  scoreRowNumber: {
-    width: 35,
-    textAlign: 'right',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  primaryButton: {
-    marginTop: 25,
+    borderRadius: 5,
     backgroundColor: '#111111',
-    borderRadius: 13,
-    paddingVertical: 15,
-    alignItems: 'center',
   },
 
-  primaryText: {
+  homeButton: {
+    marginTop: 20,
+    paddingHorizontal: 25,
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: '#111111',
+  },
+
+  homeButtonText: {
     color: '#FFFFFF',
     fontWeight: '800',
   },
 
-  secondaryButton: {
+  primaryButton: {
+    backgroundColor: '#111111',
+    borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
+    marginTop: 5,
   },
 
-  secondaryText: {
-    color: '#555555',
-    fontWeight: '700',
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
 
-  homeButton: {
-    paddingVertical: 10,
+  secondaryButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 15,
     alignItems: 'center',
+    marginTop: 9,
+    borderWidth: 1,
+    borderColor: '#DDDDDD',
   },
 
-  homeText: {
-    color: '#AAAAAA',
-    fontSize: 12,
+  secondaryButtonText: {
+    color: '#222222',
+    fontSize: 14,
+    fontWeight: '800',
   },
 });

@@ -1,9 +1,8 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,27 +11,38 @@ import {
   View,
 } from 'react-native';
 
+import { SERVER_URL } from '../config';
+
 type Message = {
-  id: string;
-  type: 'opponent' | 'user';
+  type: 'user' | 'assistant';
   text: string;
 };
 
-const SERVER_URL = 'http://10.243.27.137:3000';
-
 export default function ChatScreen() {
-  const params = useLocalSearchParams();
+  const params = useLocalSearchParams<{
+    situation?: string;
+    myRole?: string;
+    opponent?: string;
+    difficulty?: string;
+    conversationType?: string;
+    university?: string;
+    department?: string;
+    speechConcern?: string;
+    gender?: string;
+    pdfUri?: string;
+    pdfName?: string;
+  }>();
+
+  const situation = String(
+    params.situation || '일상적인 대화'
+  );
 
   const myRole = String(
     params.myRole || '학생'
   );
 
   const opponent = String(
-    params.opponent || '친구'
-  );
-
-  const situation = String(
-    params.situation || '일상적인 대화'
+    params.opponent || '상대방'
   );
 
   const difficulty = String(
@@ -59,157 +69,62 @@ export default function ChatScreen() {
     params.gender || ''
   );
 
-  const pdfUri = String(
-    params.pdfUri || ''
-  );
-
-  const pdfName = String(
-    params.pdfName || ''
-  );
-
   const [messages, setMessages] =
     useState<Message[]>([]);
 
-  const [input, setInput] =
-    useState('');
+  const [input, setInput] = useState('');
 
   const [loading, setLoading] =
     useState(false);
 
-  const [hint, setHint] =
-    useState('');
+  const [started, setStarted] =
+    useState(false);
 
-  const [documentText, setDocumentText] =
-    useState('');
+  async function callChatServer(
+    message: string,
+    conversation: string
+  ) {
+    const response = await fetch(
+      `${SERVER_URL}/chat`,
+      {
+        method: 'POST',
 
-  const [pdfLoading, setPdfLoading] =
-    useState(
-      situation === '발표 후 질문' &&
-        !!pdfUri
+        headers: {
+          'Content-Type': 'application/json',
+        },
+
+        body: JSON.stringify({
+          message,
+          myRole,
+          opponent,
+          situation,
+          difficulty,
+          conversationType,
+          university,
+          department,
+          speechConcern,
+          gender,
+          conversation,
+        }),
+      }
     );
 
-  const scrollRef =
-    useRef<ScrollView>(null);
+    const rawText = await response.text();
 
-  const uploadPdf = async () => {
-    if (!pdfUri) {
-      return '';
-    }
+    let data: any = {};
 
     try {
-      const fileResponse =
-        await fetch(pdfUri);
-
-      const blob =
-        await fileResponse.blob();
-
-      const formData =
-        new FormData();
-
-      formData.append(
-        'file',
-        new File(
-          [blob],
-          pdfName || 'presentation.pdf',
-          {
-            type: 'application/pdf',
-          }
-        )
-      );
-
-      const response =
-        await fetch(
-          `${SERVER_URL}/upload-pdf`,
-          {
-            method: 'POST',
-            body: formData,
-          }
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            'PDF를 읽지 못했습니다.'
-        );
-      }
-
-      const text =
-        String(data?.text || '');
-
-      if (!text.trim()) {
-        throw new Error(
-          'PDF에서 읽을 수 있는 내용이 없습니다.'
-        );
-      }
-
-      return text;
-    } catch (error) {
-      console.error(
-        'PDF 업로드 오류:',
-        error
-      );
-
-      throw error;
+      data = JSON.parse(rawText);
+    } catch {
+      data = {
+        error: rawText,
+      };
     }
-  };
-
-  const requestChat = async (
-    currentConversation: Message[],
-    pdfText: string
-  ) => {
-    const transcript =
-      currentConversation
-        .map((item) => {
-          const speaker =
-            item.type === 'user'
-              ? '사용자'
-              : '상대방';
-
-          return `${speaker}: ${item.text}`;
-        })
-        .join('\n');
-
-    const response =
-      await fetch(
-        `${SERVER_URL}/chat`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-
-          body: JSON.stringify({
-            message:
-              currentConversation[
-                currentConversation.length - 1
-              ]?.text || '',
-
-            myRole,
-            opponent,
-            situation,
-            difficulty,
-            conversationType,
-            university,
-            department,
-            speechConcern,
-            gender,
-
-            documentText: pdfText,
-
-            conversation: transcript,
-          }),
-        }
-      );
-
-    const data =
-      await response.json();
 
     if (!response.ok) {
       throw new Error(
         data?.error ||
+          data?.message ||
           `서버 오류 (${response.status})`
       );
     }
@@ -221,112 +136,34 @@ export default function ChatScreen() {
     }
 
     return String(data.reply);
-  };
+  }
 
-  const startConversation = async () => {
-    if (loading || messages.length > 0) {
-      return;
-    }
+  async function startConversation() {
+    if (started || loading) return;
 
     setLoading(true);
 
     try {
-      let pdfText = '';
-
-      if (
-        situation === '발표 후 질문' &&
-        pdfUri
-      ) {
-        pdfText =
-          await uploadPdf();
-
-        setDocumentText(pdfText);
-      }
-
-      const initialPrompt =
-        situation === '발표 후 질문'
-          ? `
-너는 발표를 들은 실제 청중이다.
-
-사용자가 업로드한 발표 자료를 먼저 충분히 읽고,
-그 발표의 실제 내용에서 질문할 만한 부분을 찾아라.
-
-첫 질문은 발표 자료의 구체적인 내용 하나를
-직접 언급하면서 자연스럽게 질문해라.
-
-단순한 감상 질문이나
-"발표 잘 들었습니다" 같은 뻔한 질문은 피한다.
-
-질문은 한 번에 하나만 한다.
-`
-          : `
-실제 ${opponent}의 입장에서
-대화를 자연스럽게 시작해라.
-
-상황에 맞는 첫 대사를
-1~2문장으로 말해라.
-
-`
-      ;
-
-      const response =
-        await fetch(
-          `${SERVER_URL}/chat`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type':
-                'application/json',
-            },
-            body: JSON.stringify({
-              message:
-                initialPrompt,
-
-              myRole,
-              opponent,
-              situation,
-              difficulty,
-              conversationType,
-              university,
-              department,
-              speechConcern,
-              gender,
-
-              documentText: pdfText,
-
-              conversation: '',
-            }),
-          }
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            `서버 오류 (${response.status})`
-        );
-      }
+      /*
+       * 첫 요청에서는 빈 문자열을 보내지 않는다.
+       * 서버가 이것을 "대화 시작"으로 명확하게 판단할 수 있도록
+       * 특별한 시작 메시지를 보낸다.
+       */
 
       const reply =
-        String(
-          data?.reply || ''
-        ).trim();
-
-      if (!reply) {
-        throw new Error(
-          'AI가 빈 응답을 반환했습니다.'
+        await callChatServer(
+          '__START_CONVERSATION__',
+          ''
         );
-      }
 
       setMessages([
         {
-          id: '1',
-          type: 'opponent',
+          type: 'assistant',
           text: reply,
         },
       ]);
+
+      setStarted(true);
     } catch (error) {
       console.error(
         '대화 시작 오류:',
@@ -334,30 +171,23 @@ export default function ChatScreen() {
       );
 
       alert(
-        error instanceof Error
-          ? error.message
-          : '대화를 시작하지 못했습니다.'
+        `대화를 시작하지 못했습니다.\n\n${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`
       );
     } finally {
       setLoading(false);
-      setPdfLoading(false);
     }
-  };
+  }
 
-  const sendMessage = async () => {
-    const text =
-      input.trim();
+  async function sendMessage() {
+    const text = input.trim();
 
-    if (
-      !text ||
-      loading
-    ) {
-      return;
-    }
+    if (!text || loading) return;
 
     const userMessage: Message = {
-      id:
-        `${Date.now()}-user`,
       type: 'user',
       text,
     };
@@ -369,164 +199,120 @@ export default function ChatScreen() {
 
     setMessages(nextMessages);
     setInput('');
-    setHint('');
     setLoading(true);
 
     try {
+      const conversation =
+        nextMessages
+          .map((item) => {
+            const speaker =
+              item.type === 'user'
+                ? '사용자'
+                : '상대방';
+
+            return `${speaker}: ${item.text}`;
+          })
+          .join('\n');
+
       const reply =
-        await requestChat(
-          nextMessages,
-          documentText
+        await callChatServer(
+          text,
+          conversation
         );
 
       setMessages([
         ...nextMessages,
         {
-          id:
-            `${Date.now()}-ai`,
-          type: 'opponent',
+          type: 'assistant',
           text: reply,
         },
       ]);
     } catch (error) {
       console.error(
-        'AI 응답 오류:',
+        '메시지 전송 오류:',
+        error
+      );
+
+      setMessages([
+        ...nextMessages,
+        {
+          type: 'assistant',
+          text:
+            '응답을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.',
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function endConversation() {
+    if (messages.length < 2) {
+      alert(
+        '대화를 조금 더 진행해주세요.'
+      );
+      return;
+    }
+
+    try {
+      const transcript =
+        messages
+          .map((item) => {
+            const speaker =
+              item.type === 'user'
+                ? '사용자'
+                : '상대방';
+
+            return `${speaker}:${item.text}`;
+          })
+          .join('\n');
+
+      const conversationData = {
+        messages: transcript,
+        situation,
+        personality: conversationType,
+        savedAt:
+          new Date().toISOString(),
+      };
+
+      await AsyncStorage.removeItem(
+        'tongue_brake_current_conversation'
+      );
+
+      await AsyncStorage.setItem(
+        'tongue_brake_current_conversation',
+        JSON.stringify(
+          conversationData
+        )
+      );
+
+      console.log(
+        '✅ 분석용 대화 저장 완료'
+      );
+
+      router.push('/result');
+    } catch (error) {
+      console.error(
+        '대화 저장 오류:',
         error
       );
 
       alert(
-        error instanceof Error
-          ? error.message
-          : 'AI 응답을 가져오지 못했습니다.'
+        '대화를 저장하지 못했습니다.'
       );
-    } finally {
-      setLoading(false);
-
-      setTimeout(() => {
-        scrollRef.current?.scrollToEnd({
-          animated: true,
-        });
-      }, 100);
     }
-  };
-
-  const showHint = () => {
-    const lastOpponent =
-      [...messages]
-        .reverse()
-        .find(
-          (item) =>
-            item.type ===
-            'opponent'
-        );
-
-    if (!lastOpponent) {
-      return;
-    }
-
-    if (
-      situation === '면접'
-    ) {
-      setHint(
-        '핵심 경험 → 이유 → 구체적인 사례 순서로 답해보세요.'
-      );
-      return;
-    }
-
-    if (
-      situation === '발표 후 질문'
-    ) {
-      setHint(
-        '질문의 핵심을 먼저 답한 뒤, 발표 자료의 근거를 하나 연결해보세요.'
-      );
-      return;
-    }
-
-    const words =
-      lastOpponent.text
-        .replace(
-          /[^\p{L}\p{N}\s]/gu,
-          ''
-        )
-        .split(/\s+/)
-        .filter(
-          (word) =>
-            word.length >= 2
-        );
-
-    const keyword =
-      words[
-        Math.floor(
-          words.length / 2
-        )
-      ] || '상대방의 말';
-
-    setHint(
-      `"${keyword}"와 관련된 내용을 하나 골라서 반응해보세요.`
-    );
-  };
-
-  const endConversation = () => {
-    if (
-      messages.length < 2
-    ) {
-      router.replace('/');
-      return;
-    }
-
-    const transcript =
-      messages
-        .map((item) => {
-          const speaker =
-            item.type === 'user'
-              ? '사용자'
-              : '상대방';
-
-          return `${speaker}: ${item.text}`;
-        })
-        .join('\n');
-
-    router.push(
-      `/result?messages=${encodeURIComponent(
-        transcript
-      )}&situation=${encodeURIComponent(
-        situation
-      )}&personality=${encodeURIComponent(
-        conversationType
-      )}` as any
-    );
-  };
-
-  if (
-    messages.length === 0 &&
-    !loading
-  ) {
-    startConversation();
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={
-        Platform.OS === 'ios'
-          ? 'padding'
-          : undefined
-      }
-    >
+    <View style={styles.container}>
       <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={styles.situation}
-            numberOfLines={1}
-          >
-            {situation}
+        <View>
+          <Text style={styles.title}>
+            대화 연습
           </Text>
 
-          <Text style={styles.headerInfo}>
-            {opponent} · {conversationType}
-            {pdfUri
-              ? ' · PDF 분석'
-              : ''}
+          <Text style={styles.subtitle}>
+            {situation} · {difficulty}
           </Text>
         </View>
 
@@ -534,319 +320,301 @@ export default function ChatScreen() {
           style={styles.endButton}
           onPress={endConversation}
         >
-          <Text style={styles.endText}>
+          <Text style={styles.endButtonText}>
             종료
           </Text>
         </Pressable>
       </View>
 
-      {pdfLoading && (
-        <View style={styles.pdfLoading}>
-          <ActivityIndicator size="small" />
-
-          <Text style={styles.pdfLoadingText}>
-            발표 자료를 읽고 질문을 준비하는 중...
-          </Text>
-        </View>
-      )}
-
       <ScrollView
-        ref={scrollRef}
         style={styles.messages}
         contentContainerStyle={
-          styles.messageContent
-        }
-        onContentSizeChange={() =>
-          scrollRef.current?.scrollToEnd({
-            animated: true,
-          })
+          styles.messagesContent
         }
       >
+        {!started && (
+          <View style={styles.startBox}>
+            <Text style={styles.startTitle}>
+              {opponent}와 대화를
+              시작해보세요.
+            </Text>
+
+            <Text style={styles.startText}>
+              실제 상황처럼 대화하고,
+              끝난 뒤 AI가 대화를
+              분석합니다.
+            </Text>
+
+            <Pressable
+              style={styles.startButton}
+              onPress={startConversation}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text
+                  style={
+                    styles.startButtonText
+                  }
+                >
+                  대화 시작
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        )}
+
         {messages.map(
-          (item) => (
+          (message, index) => (
             <View
-              key={item.id}
+              key={`${index}-${message.type}`}
               style={[
                 styles.messageRow,
-                item.type === 'user' &&
-                  styles.userRow,
+                message.type === 'user'
+                  ? styles.userRow
+                  : styles.assistantRow,
               ]}
             >
               <View
                 style={[
                   styles.bubble,
-                  item.type ===
-                    'user' &&
-                    styles.userBubble,
+                  message.type === 'user'
+                    ? styles.userBubble
+                    : styles.assistantBubble,
                 ]}
               >
                 <Text
                   style={[
-                    styles.bubbleText,
-                    item.type ===
-                      'user' &&
-                      styles.userBubbleText,
+                    styles.messageText,
+                    message.type === 'user'
+                      ? styles.userText
+                      : styles.assistantText,
                   ]}
                 >
-                  {item.text}
+                  {message.text}
                 </Text>
               </View>
             </View>
           )
         )}
 
-        {loading && (
-          <View style={styles.loadingBubble}>
-            <ActivityIndicator
-              size="small"
-            />
-
-            <Text style={styles.loadingText}>
-              상대방이 답하는 중...
-            </Text>
+        {loading && started && (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator />
           </View>
         )}
       </ScrollView>
 
-      {hint && (
-        <View style={styles.hint}>
-          <Text style={styles.hintTitle}>
-            💡 힌트
-          </Text>
+      {started && (
+        <View style={styles.inputArea}>
+          <TextInput
+            value={input}
+            onChangeText={setInput}
+            placeholder="메시지를 입력하세요"
+            placeholderTextColor="#999"
+            style={styles.input}
+            multiline
+            editable={!loading}
+          />
 
-          <Text style={styles.hintText}>
-            {hint}
-          </Text>
+          <Pressable
+            style={[
+              styles.sendButton,
+              (!input.trim() ||
+                loading) &&
+                styles.sendButtonDisabled,
+            ]}
+            onPress={sendMessage}
+            disabled={
+              !input.trim() || loading
+            }
+          >
+            <Text style={styles.sendButtonText}>
+              전송
+            </Text>
+          </Pressable>
         </View>
       )}
-
-      <View style={styles.bottom}>
-        <Pressable
-          style={styles.hintButton}
-          onPress={showHint}
-          disabled={loading}
-        >
-          <Text style={styles.hintButtonText}>
-            힌트
-          </Text>
-        </Pressable>
-
-        <TextInput
-          style={styles.input}
-          placeholder="메시지를 입력하세요"
-          value={input}
-          onChangeText={setInput}
-          onSubmitEditing={sendMessage}
-          returnKeyType="send"
-          editable={!loading}
-        />
-
-        <Pressable
-          style={[
-            styles.sendButton,
-            (!input.trim() ||
-              loading) &&
-              styles.sendDisabled,
-          ]}
-          onPress={sendMessage}
-          disabled={
-            !input.trim() ||
-            loading
-          }
-        >
-          <Text style={styles.sendText}>
-            ↑
-          </Text>
-        </Pressable>
-      </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F7F7F8',
+    backgroundColor: '#F7F7F7',
   },
 
   header: {
-    paddingHorizontal: 18,
-    paddingVertical: 15,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#EEEEEE',
+    borderBottomColor: '#E5E5E5',
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
   },
 
-  situation: {
-    fontSize: 16,
-    fontWeight: '800',
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#111111',
   },
 
-  headerInfo: {
+  subtitle: {
     marginTop: 4,
-    color: '#999999',
-    fontSize: 11,
+    fontSize: 13,
+    color: '#777777',
   },
 
   endButton: {
-    paddingHorizontal: 13,
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 9,
-    backgroundColor: '#F1F1F1',
+    borderRadius: 8,
+    backgroundColor: '#EEEEEE',
   },
 
-  endText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-
-  pdfLoading: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-
-  pdfLoadingText: {
-    fontSize: 11,
-    color: '#777777',
+  endButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333333',
   },
 
   messages: {
     flex: 1,
   },
 
-  messageContent: {
-    padding: 18,
-    paddingBottom: 25,
+  messagesContent: {
+    padding: 16,
+    paddingBottom: 24,
+  },
+
+  startBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 20,
+    marginBottom: 16,
+  },
+
+  startTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111111',
+  },
+
+  startText: {
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 21,
+    color: '#666666',
+  },
+
+  startButton: {
+    marginTop: 18,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: '#111111',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  startButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 
   messageRow: {
-    marginBottom: 13,
-    alignItems: 'flex-start',
+    width: '100%',
+    marginBottom: 10,
+    flexDirection: 'row',
   },
 
   userRow: {
-    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+  },
+
+  assistantRow: {
+    justifyContent: 'flex-start',
   },
 
   bubble: {
-    maxWidth: '82%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 17,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#EAEAEA',
+    maxWidth: '78%',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 16,
   },
 
   userBubble: {
     backgroundColor: '#111111',
-    borderColor: '#111111',
   },
 
-  bubbleText: {
-    fontSize: 14,
-    color: '#222222',
-    lineHeight: 21,
-  },
-
-  userBubbleText: {
-    color: '#FFFFFF',
-  },
-
-  loadingBubble: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 17,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-  },
-
-  loadingText: {
-    color: '#999999',
-    fontSize: 12,
-  },
-
-  hint: {
-    marginHorizontal: 15,
-    marginBottom: 8,
-    padding: 12,
-    borderRadius: 13,
+  assistantBubble: {
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E5E5E5',
   },
 
-  hintTitle: {
-    fontSize: 12,
-    fontWeight: '800',
+  messageText: {
+    fontSize: 15,
+    lineHeight: 22,
   },
 
-  hintText: {
-    marginTop: 4,
-    fontSize: 12,
-    color: '#666666',
-    lineHeight: 18,
+  userText: {
+    color: '#FFFFFF',
   },
 
-  bottom: {
+  assistantText: {
+    color: '#222222',
+  },
+
+  loadingRow: {
+    paddingVertical: 8,
+    alignItems: 'flex-start',
+  },
+
+  inputArea: {
     padding: 10,
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: '#EEEEEE',
+    borderTopColor: '#E5E5E5',
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-
-  hintButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: '#F1F1F1',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  hintButtonText: {
-    fontSize: 11,
-    fontWeight: '700',
+    alignItems: 'flex-end',
+    gap: 8,
   },
 
   input: {
     flex: 1,
-    minHeight: 42,
-    maxHeight: 100,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 13,
-    paddingHorizontal: 13,
-    fontSize: 13,
+    minHeight: 44,
+    maxHeight: 110,
+    borderWidth: 1,
+    borderColor: '#DDDDDD',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    backgroundColor: '#FAFAFA',
   },
 
   sendButton: {
-    width: 42,
-    height: 42,
+    height: 44,
+    paddingHorizontal: 16,
     borderRadius: 12,
     backgroundColor: '#111111',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  sendDisabled: {
-    opacity: 0.3,
+  sendButtonDisabled: {
+    backgroundColor: '#BBBBBB',
   },
 
-  sendText: {
+  sendButtonText: {
     color: '#FFFFFF',
-    fontSize: 21,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
