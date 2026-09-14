@@ -6,6 +6,10 @@ const multer = require('multer');
 const { PDFParse } = require('pdf-parse');
 const OpenAI = require('openai');
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 const app = express();
 
 const PORT = process.env.PORT || 3000;
