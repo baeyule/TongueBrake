@@ -734,7 +734,56 @@ example:
     }
   }
 );
+// ================================
+// 관리자용 실험 데이터 조회
+// ================================
+app.get('/experiment-data', (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
 
+    const filePath = path.join(
+      __dirname,
+      'experiment-data.json'
+    );
+
+    if (!fs.existsSync(filePath)) {
+      return res.json({
+        success: true,
+        data: [],
+      });
+    }
+
+    let data = [];
+
+    try {
+      data = JSON.parse(
+        fs.readFileSync(filePath, 'utf8')
+      );
+
+      if (!Array.isArray(data)) {
+        data = [];
+      }
+    } catch {
+      data = [];
+    }
+
+    res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error(
+      '실험 데이터 조회 오류:',
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      error: '실험 데이터 조회 실패',
+    });
+  }
+});
 /* =====================================================
    서버 실행
 ===================================================== */
@@ -751,3 +800,72 @@ app.listen(
     );
   }
 );
+
+// ================================
+// Tongue Brake 실험 데이터 저장
+// ================================
+
+app.post('/experiment-data', (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+
+    const data = req.body || {};
+
+    if (!data.participantId) {
+      return res.status(400).json({
+        error: 'participantId가 없습니다.',
+      });
+    }
+
+    const filePath = path.join(
+      __dirname,
+      'experiment-data.json'
+    );
+
+    let allData = [];
+
+    if (fs.existsSync(filePath)) {
+      try {
+        allData = JSON.parse(
+          fs.readFileSync(filePath, 'utf8')
+        );
+
+        if (!Array.isArray(allData)) {
+          allData = [];
+        }
+      } catch {
+        allData = [];
+      }
+    }
+
+    allData.push({
+      ...data,
+      savedAt: new Date().toISOString(),
+    });
+
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify(allData, null, 2),
+      'utf8'
+    );
+
+    console.log(
+      `🧪 실험 데이터 저장: 참가자 ${data.participantId}`
+    );
+
+    res.json({
+      success: true,
+      message: '실험 데이터가 저장되었습니다.',
+    });
+  } catch (error) {
+    console.error(
+      '실험 데이터 저장 오류:',
+      error
+    );
+
+    res.status(500).json({
+      error: '실험 데이터 저장 실패',
+    });
+  }
+});
