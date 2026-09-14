@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -27,8 +27,17 @@ type Analysis = {
 };
 
 export default function ResultScreen() {
-  const [messages, setMessages] = useState('');
-  const [situation, setSituation] = useState('대화');
+  const {
+    participantId,
+    experimentPhase,
+  } = useLocalSearchParams();
+
+  const [messages, setMessages] =
+    useState('');
+
+  const [situation, setSituation] =
+    useState('대화');
+
   const [personality, setPersonality] =
     useState('일반 대화');
 
@@ -41,152 +50,210 @@ export default function ResultScreen() {
   const [errorMessage, setErrorMessage] =
     useState('');
 
-  const analyzeConversation = async () => {
-    try {
-      console.log('🔎 분석 시작');
+  const [serverSaved, setServerSaved] =
+    useState(false);
 
-      const saved =
-        await AsyncStorage.getItem(
-          'tongue_brake_current_conversation'
-        );
+  const id = String(
+    participantId || ''
+  );
 
-      console.log(
-        '📦 저장된 대화:',
-        saved
-      );
+  const phase = String(
+    experimentPhase ||
+      'normal_practice'
+  );
 
-      if (!saved) {
-        throw new Error(
-          '분석할 대화가 없습니다.'
-        );
-      }
+  const analyzeConversation =
+    async () => {
+      try {
+        console.log('🔎 분석 시작');
 
-      const conversation =
-        JSON.parse(saved);
+        const saved =
+          await AsyncStorage.getItem(
+            'tongue_brake_current_conversation'
+          );
 
-      const conversationText =
-        String(
-          conversation.messages || ''
-        );
-
-      const currentSituation =
-        String(
-          conversation.situation || '대화'
-        );
-
-      const currentPersonality =
-        String(
-          conversation.personality ||
-            '일반 대화'
-        );
-
-      if (!conversationText.trim()) {
-        throw new Error(
-          '저장된 대화 내용이 비어 있습니다.'
-        );
-      }
-
-      setMessages(
-        conversationText
-      );
-
-      setSituation(
-        currentSituation
-      );
-
-      setPersonality(
-        currentPersonality
-      );
-
-      console.log(
-        '📤 서버로 분석 요청:',
-        {
-          messages:
-            conversationText,
-          situation:
-            currentSituation,
-          personality:
-            currentPersonality,
+        if (!saved) {
+          throw new Error(
+            '분석할 대화가 없습니다.'
+          );
         }
-      );
 
-      /*
-       * 중요:
-       * server.js의 /analyze는
-       * "messages"라는 이름을 사용한다.
-       *
-       * 따라서 conversation이 아니라
-       * messages로 보내야 한다.
-       */
+        const conversation =
+          JSON.parse(saved);
 
-      const response = await fetch(
-        `${SERVER_URL}/analyze`,
-        {
-          method: 'POST',
+        const conversationText =
+          String(
+            conversation.messages || ''
+          );
 
-          headers: {
-            'Content-Type':
-              'application/json',
-          },
+        const currentSituation =
+          String(
+            conversation.situation ||
+              '대화'
+          );
 
-          body: JSON.stringify({
-            messages:
-              conversationText,
+        const currentPersonality =
+          String(
+            conversation.personality ||
+              '일반 대화'
+          );
 
-            situation:
-              currentSituation,
-
-            personality:
-              currentPersonality,
-          }),
+        if (!conversationText.trim()) {
+          throw new Error(
+            '저장된 대화 내용이 비어 있습니다.'
+          );
         }
-      );
 
-      const data =
-        await response.json();
-
-      console.log(
-        '📥 분석 서버 응답:',
-        data
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            `분석 서버 오류 (${response.status})`
+        setMessages(
+          conversationText
         );
+
+        setSituation(
+          currentSituation
+        );
+
+        setPersonality(
+          currentPersonality
+        );
+
+        console.log(
+          '👤 참가자:',
+          id || '일반 사용자'
+        );
+
+        const response =
+          await fetch(
+            `${SERVER_URL}/analyze`,
+            {
+              method: 'POST',
+
+              headers: {
+                'Content-Type':
+                  'application/json',
+              },
+
+              body: JSON.stringify({
+                messages:
+                  conversationText,
+
+                situation:
+                  currentSituation,
+
+                personality:
+                  currentPersonality,
+              }),
+            }
+          );
+
+        const data =
+          await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data?.error ||
+              `분석 서버 오류 (${response.status})`
+          );
+        }
+
+        const result =
+          data.analysis ?? data;
+
+        setAnalysis(result);
+
+        /*
+         * 1. 기존 기록 저장
+         */
+        await saveHistory(
+          result,
+          conversationText,
+          currentSituation,
+          currentPersonality
+        );
+
+        /*
+         * 2. 실험 데이터 서버 저장
+         */
+        if (id) {
+          try {
+            console.log(
+              '🧪 실험 데이터 서버 전송 시작'
+            );
+
+            const saveResponse =
+              await fetch(
+                `${SERVER_URL}/experiment-data`,
+                {
+                  method: 'POST',
+
+                  headers: {
+                    'Content-Type':
+                      'application/json',
+                  },
+
+                  body: JSON.stringify({
+                    participantId: id,
+
+                    phase: phase,
+
+                    date:
+                      new Date().toISOString(),
+
+                    situation:
+                      currentSituation,
+
+                    messages:
+                      conversationText,
+
+                    analysis:
+                      result,
+                  }),
+                }
+              );
+
+            const saveData =
+              await saveResponse.json();
+
+            if (
+              saveResponse.ok &&
+              saveData?.success
+            ) {
+              console.log(
+                '✅ 실험 데이터 서버 저장 성공'
+              );
+
+              setServerSaved(true);
+            } else {
+              console.error(
+                '❌ 실험 데이터 서버 저장 실패:',
+                saveData
+              );
+            }
+          } catch (serverError) {
+            console.error(
+              '❌ 실험 데이터 전송 오류:',
+              serverError
+            );
+          }
+        }
+
+        console.log(
+          '✅ 분석 완료'
+        );
+      } catch (error) {
+        console.error(
+          '분석 오류:',
+          error
+        );
+
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : '분석 중 오류가 발생했습니다.'
+        );
+      } finally {
+        setLoading(false);
       }
-
-      const result =
-        data.analysis ?? data;
-
-      setAnalysis(result);
-
-      await saveHistory(
-        result,
-        conversationText,
-        currentSituation,
-        currentPersonality
-      );
-
-      console.log(
-        '✅ 분석 완료'
-      );
-    } catch (error) {
-      console.error(
-        '분석 오류:',
-        error
-      );
-
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : '분석 중 오류가 발생했습니다.'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
 
   const saveHistory = async (
     result: Analysis,
@@ -195,6 +262,9 @@ export default function ResultScreen() {
     currentPersonality: string
   ) => {
     try {
+      /*
+       * 일반 기록
+       */
       const saved =
         await AsyncStorage.getItem(
           'tongue_brake_history'
@@ -211,6 +281,12 @@ export default function ResultScreen() {
 
         date:
           new Date().toISOString(),
+
+        participantId:
+          id || null,
+
+        experimentPhase:
+          phase,
 
         situation:
           currentSituation,
@@ -233,9 +309,61 @@ export default function ResultScreen() {
         ])
       );
 
-      console.log(
-        '✅ 기록 저장 완료'
-      );
+      /*
+       * 참가자별 실험 데이터
+       * 휴대폰에도 별도 저장
+       */
+      if (id) {
+        const experimentKey =
+          `tongue_brake_experiment_results_${id}`;
+
+        const savedExperiment =
+          await AsyncStorage.getItem(
+            experimentKey
+          );
+
+        const experimentHistory =
+          savedExperiment
+            ? JSON.parse(
+                savedExperiment
+              )
+            : [];
+
+        const experimentItem = {
+          id:
+            Date.now().toString(),
+
+          participantId:
+            id,
+
+          phase:
+            phase,
+
+          date:
+            new Date().toISOString(),
+
+          situation:
+            currentSituation,
+
+          messages:
+            conversationText,
+
+          analysis:
+            result,
+        };
+
+        await AsyncStorage.setItem(
+          experimentKey,
+          JSON.stringify([
+            experimentItem,
+            ...experimentHistory,
+          ])
+        );
+
+        console.log(
+          '🧪 참가자별 실험 데이터 저장 완료'
+        );
+      }
     } catch (error) {
       console.error(
         '기록 저장 오류:',
@@ -292,9 +420,9 @@ export default function ResultScreen() {
 
         <Pressable
           style={styles.homeButton}
-          onPress={() => {
-            router.replace('/');
-          }}
+          onPress={() =>
+            router.replace('/')
+          }
         >
           <Text
             style={styles.homeButtonText}
@@ -333,6 +461,9 @@ export default function ResultScreen() {
 
         <Text style={styles.subtitle}>
           {situation}
+          {id
+            ? ` · 참가자 ${id}`
+            : ''}
         </Text>
       </View>
 
@@ -355,9 +486,8 @@ export default function ResultScreen() {
           잘한 점
         </Text>
 
-        {analysis.goodPoints &&
-        analysis.goodPoints.length >
-          0 ? (
+        {analysis.goodPoints?.length >
+        0 ? (
           analysis.goodPoints.map(
             (item, index) => (
               <View
@@ -392,9 +522,8 @@ export default function ResultScreen() {
           아쉬운 점
         </Text>
 
-        {analysis.problems &&
-        analysis.problems.length >
-          0 ? (
+        {analysis.problems?.length >
+        0 ? (
           analysis.problems.map(
             (item, index) => (
               <View
@@ -429,8 +558,8 @@ export default function ResultScreen() {
           다음에는 이렇게
         </Text>
 
-        {analysis.advice &&
-        analysis.advice.length > 0 ? (
+        {analysis.advice?.length >
+        0 ? (
           analysis.advice.map(
             (item, index) => (
               <View
@@ -484,7 +613,9 @@ export default function ResultScreen() {
 
         <ScoreRow
           title="말투"
-          value={analysis.toneScore}
+          value={
+            analysis.toneScore
+          }
         />
 
         <ScoreRow
@@ -523,13 +654,39 @@ export default function ResultScreen() {
         />
       </View>
 
+      {id && (
+        <View
+          style={styles.experimentBox}
+        >
+          <Text
+            style={styles.experimentTitle}
+          >
+            {serverSaved
+              ? '✓ 실험 데이터 저장 완료'
+              : '실험 데이터 처리 중'}
+          </Text>
+
+          <Text
+            style={styles.experimentText}
+          >
+            참가자 번호: {id}
+            {'\n'}
+            실험 단계: {phase}
+            {'\n\n'}
+            {serverSaved
+              ? '서버에 실험 결과가 저장되었습니다.'
+              : '서버 저장에 실패했을 수 있습니다.'}
+          </Text>
+        </View>
+      )}
+
       <Pressable
         style={
           styles.primaryButton
         }
-        onPress={() => {
-          router.replace('/');
-        }}
+        onPress={() =>
+          router.replace('/')
+        }
       >
         <Text
           style={
@@ -544,9 +701,9 @@ export default function ResultScreen() {
         style={
           styles.secondaryButton
         }
-        onPress={() => {
-          router.push('/history');
-        }}
+        onPress={() =>
+          router.push('/history')
+        }
       >
         <Text
           style={
@@ -640,7 +797,7 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 8,
     fontSize: 13,
-    color: '#888888',
+    color: '#888',
   },
 
   errorTitle: {
@@ -652,7 +809,7 @@ const styles = StyleSheet.create({
   errorMessage: {
     marginTop: 12,
     fontSize: 13,
-    color: '#777777',
+    color: '#777',
     textAlign: 'center',
     lineHeight: 20,
   },
@@ -664,17 +821,17 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 25,
     fontWeight: '900',
-    color: '#111111',
+    color: '#111',
   },
 
   subtitle: {
     marginTop: 5,
     fontSize: 13,
-    color: '#888888',
+    color: '#888',
   },
 
   scoreCard: {
-    backgroundColor: '#111111',
+    backgroundColor: '#111',
     borderRadius: 22,
     padding: 25,
     alignItems: 'center',
@@ -682,26 +839,26 @@ const styles = StyleSheet.create({
   },
 
   scoreLabel: {
-    color: '#BBBBBB',
+    color: '#BBB',
     fontSize: 12,
     fontWeight: '700',
   },
 
   score: {
     marginTop: 4,
-    color: '#FFFFFF',
+    color: '#FFF',
     fontSize: 58,
     fontWeight: '900',
   },
 
   scoreUnit: {
     marginTop: -5,
-    color: '#AAAAAA',
+    color: '#AAA',
     fontSize: 12,
   },
 
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFF',
     borderRadius: 18,
     padding: 18,
     marginBottom: 13,
@@ -724,19 +881,19 @@ const styles = StyleSheet.create({
   bullet: {
     width: 18,
     fontSize: 15,
-    color: '#555555',
+    color: '#555',
   },
 
   listText: {
     flex: 1,
     fontSize: 13,
-    color: '#333333',
+    color: '#333',
     lineHeight: 20,
   },
 
   emptyText: {
     fontSize: 13,
-    color: '#999999',
+    color: '#999',
   },
 
   exampleBox: {
@@ -747,7 +904,7 @@ const styles = StyleSheet.create({
 
   exampleText: {
     fontSize: 13,
-    color: '#333333',
+    color: '#333',
     lineHeight: 21,
   },
 
@@ -763,7 +920,7 @@ const styles = StyleSheet.create({
 
   scoreRowTitle: {
     fontSize: 12,
-    color: '#555555',
+    color: '#555',
   },
 
   scoreRowValue: {
@@ -774,14 +931,36 @@ const styles = StyleSheet.create({
   barBackground: {
     height: 7,
     borderRadius: 5,
-    backgroundColor: '#EEEEEE',
+    backgroundColor: '#EEE',
     overflow: 'hidden',
   },
 
   bar: {
     height: 7,
     borderRadius: 5,
-    backgroundColor: '#111111',
+    backgroundColor: '#111',
+  },
+
+  experimentBox: {
+    backgroundColor: '#FFF',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 13,
+    borderWidth: 1,
+    borderColor: '#DDD',
+  },
+
+  experimentTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111',
+    marginBottom: 8,
+  },
+
+  experimentText: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 21,
   },
 
   homeButton: {
@@ -789,16 +968,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 25,
     paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: '#111111',
+    backgroundColor: '#111',
   },
 
   homeButtonText: {
-    color: '#FFFFFF',
+    color: '#FFF',
     fontWeight: '800',
   },
 
   primaryButton: {
-    backgroundColor: '#111111',
+    backgroundColor: '#111',
     borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
@@ -806,24 +985,25 @@ const styles = StyleSheet.create({
   },
 
   primaryButtonText: {
-    color: '#FFFFFF',
+    color: '#FFF',
     fontSize: 14,
     fontWeight: '800',
   },
 
   secondaryButton: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFF',
     borderRadius: 14,
     paddingVertical: 15,
     alignItems: 'center',
     marginTop: 9,
     borderWidth: 1,
-    borderColor: '#DDDDDD',
+    borderColor: '#DDD',
   },
 
   secondaryButtonText: {
-    color: '#222222',
+    color: '#222',
     fontSize: 14,
     fontWeight: '800',
   },
 });
+
